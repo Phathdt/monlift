@@ -31,6 +31,11 @@ func Execute() {
 				ArgsUsage: "[migration_name]",
 				Action:    createCommand,
 			},
+			{
+				Name:   "status",
+				Usage:  "Show migration status",
+				Action: statusCommand,
+			},
 		},
 	}
 

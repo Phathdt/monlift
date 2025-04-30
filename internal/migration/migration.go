@@ -397,3 +397,58 @@ func GetExecutedMigrations(db *mongo.Database) (map[string]bool, error) {
 
 	return executed, nil
 }
+
+type MigrationStatus struct {
+	Version   string
+	AppliedAt time.Time
+	Status    string
+}
+
+func GetMigrationStatus(db *mongo.Database, dir string) ([]MigrationStatus, error) {
+	if err := initVersionsCollection(db); err != nil {
+		return nil, fmt.Errorf("failed to initialize versions collection: %w", err)
+	}
+
+	// Get all migrations from directory
+	migrations, err := GetMigrations(dir, db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get migrations: %w", err)
+	}
+
+	// Get applied timestamps
+	ctx := context.Background()
+	cursor, err := db.Collection("versions").Find(ctx, bson.M{}, options.Find().SetProjection(bson.M{"version": 1, "appliedAt": 1, "_id": 0}))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get migration timestamps: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	appliedAt := make(map[string]time.Time)
+	for cursor.Next(ctx) {
+		var result struct {
+			Version   string    `bson:"version"`
+			AppliedAt time.Time `bson:"appliedAt"`
+		}
+		if err := cursor.Decode(&result); err != nil {
+			return nil, fmt.Errorf("failed to decode migration timestamp: %w", err)
+		}
+		appliedAt[result.Version] = result.AppliedAt
+	}
+
+	// Build status list
+	status := make([]MigrationStatus, 0, len(migrations))
+	for _, m := range migrations {
+		s := MigrationStatus{
+			Version: m.Version,
+		}
+		if at, ok := appliedAt[m.Version]; ok {
+			s.AppliedAt = at
+			s.Status = "Applied"
+		} else {
+			s.Status = "Pending"
+		}
+		status = append(status, s)
+	}
+
+	return status, nil
+}

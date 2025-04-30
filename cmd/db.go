@@ -22,9 +22,6 @@ func ConnectDB() (*mongo.Database, error) {
 	}
 	dbName := parts[len(parts)-1]
 
-	fmt.Println("uri", uri)
-	fmt.Println("dbName", dbName)
-
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)

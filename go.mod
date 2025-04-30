@@ -1,4 +1,4 @@
-module github.com/phathdt/mongo-migrate
+module github.com/phathdt/monlift
 
 go 1.24.1
 

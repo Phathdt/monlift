@@ -8,7 +8,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-const serviceName = "mongo-migrate"
+const serviceName = "monlift"
 
 func Execute() {
 	app := &cli.App{

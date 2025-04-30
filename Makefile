@@ -1,7 +1,7 @@
 .PHONY: build test run clean
 
 # Variables
-BINARY_NAME=mongo-migrate
+BINARY_NAME=monlift
 GO=go
 DOCKER=docker
 DOCKER_COMPOSE=docker-compose

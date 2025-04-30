@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/phathdt/mongo-migrate/cmd"
+	"github.com/phathdt/monlift/cmd"
 )
 
 func main() {

@@ -5,7 +5,7 @@ import (
 	"sort"
 
 	"github.com/joho/godotenv"
-	"github.com/phathdt/mongo-migrate/internal/migration"
+	"github.com/phathdt/monlift/internal/migration"
 	"github.com/urfave/cli/v2"
 )
 

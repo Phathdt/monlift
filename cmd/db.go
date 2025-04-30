@@ -1,20 +1,15 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func ConnectDB() (*mongo.Database, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	uri := os.Getenv("DB_URI")
 	if uri == "" {
 		return nil, fmt.Errorf("DB_URI environment variable is not set")
@@ -30,7 +25,7 @@ func ConnectDB() (*mongo.Database, error) {
 	fmt.Println("uri", uri)
 	fmt.Println("dbName", dbName)
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}

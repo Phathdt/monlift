@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type Migration struct {
@@ -57,7 +57,7 @@ func initVersionsCollection(db *mongo.Database) error {
 				"appliedAt": time.Now(),
 			},
 		},
-		options.Update().SetUpsert(true),
+		options.UpdateOne().SetUpsert(true),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to initialize versions: %w", err)
@@ -177,7 +177,7 @@ func executeMongoScript(db *mongo.Database, script string) error {
 			case "dropIndex":
 				// Parse the index name from the command
 				indexName := strings.Trim(argsStr, `'"`)
-				_, err := db.Collection(parts[0]).Indexes().DropOne(ctx, indexName)
+				err := db.Collection(parts[0]).Indexes().DropOne(ctx, indexName)
 				if err != nil && !strings.Contains(err.Error(), "IndexNotFound") {
 					return fmt.Errorf("failed to drop index: %w", err)
 				}
@@ -289,7 +289,7 @@ func (m *Migration) Up() error {
 				"appliedAt": time.Now(),
 			},
 		},
-		options.Update().SetUpsert(true),
+		options.UpdateOne().SetUpsert(true),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to record migration: %w", err)

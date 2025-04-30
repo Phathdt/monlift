@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -37,29 +36,6 @@ func ConnectDB() (*mongo.Database, error) {
 	}
 
 	db := client.Database(dbName)
-
-	// Create schema_versions collection if not exists
-	err = db.CreateCollection(ctx, "schema_versions")
-	if err != nil && !mongo.IsDuplicateKeyError(err) && err.Error() != "NamespaceExists" {
-		return nil, fmt.Errorf("failed to create schema_versions collection: %w", err)
-	}
-
-	// Ensure schema_versions has initial document
-	_, err = db.Collection("schema_versions").UpdateOne(
-		ctx,
-		bson.M{},
-		bson.M{
-			"$setOnInsert": bson.M{
-				"version":   0,
-				"appliedAt": time.Now(),
-				"status":    "applied",
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize schema_versions: %w", err)
-	}
 
 	return db, nil
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-func newCommand(c *cli.Context) error {
+func createCommand(c *cli.Context) error {
 	if c.NArg() < 1 {
 		return fmt.Errorf("migration name is required")
 	}

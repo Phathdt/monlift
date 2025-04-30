@@ -18,18 +18,18 @@ func Execute() {
 			{
 				Name:   "up",
 				Usage:  "Run all pending migrations",
-				Action: UpCommand().Action,
+				Action: UpCommand,
 			},
 			{
 				Name:   "down",
 				Usage:  "Rollback last migration",
-				Action: DownCommand().Action,
+				Action: DownCommand,
 			},
 			{
-				Name:      "new",
+				Name:      "create",
 				Usage:     "Create a new migration file",
 				ArgsUsage: "[migration_name]",
-				Action:    newCommand,
+				Action:    createCommand,
 			},
 		},
 	}

@@ -81,7 +81,7 @@ func executeMongoScript(db *mongo.Database, script string) error {
 		// Parse the command
 		if strings.HasPrefix(cmd, "db.") {
 			// Handle collection operations
-			parts := strings.SplitN(cmd, ".", 2)
+			parts := strings.SplitN(cmd, ".", 3)
 			if len(parts) < 2 {
 				return fmt.Errorf("invalid command format: %s", cmd)
 			}
@@ -109,151 +109,179 @@ func executeMongoScript(db *mongo.Database, script string) error {
 				if err != nil && !strings.Contains(err.Error(), "NamespaceExists") {
 					return fmt.Errorf("failed to create collection: %w", err)
 				}
-			case "insertOne":
-				// Parse the document from the command
-				doc := bson.M{}
-				if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &doc); err != nil {
-					return fmt.Errorf("failed to parse document: %w", err)
-				}
-				_, err := db.Collection(parts[0]).InsertOne(ctx, doc)
-				if err != nil {
-					return fmt.Errorf("failed to insert document: %w", err)
-				}
-			case "updateMany":
-				// Parse the filter and update from the command
-				args := strings.Split(argsStr, ",")
-				if len(args) < 2 {
-					return fmt.Errorf("invalid updateMany command format: %s", cmd)
-				}
-				filter := bson.M{}
-				update := bson.M{}
-				if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
-					return fmt.Errorf("failed to parse filter: %w", err)
-				}
-				if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &update); err != nil {
-					return fmt.Errorf("failed to parse update: %w", err)
-				}
-				_, err := db.Collection(parts[0]).UpdateMany(ctx, filter, update)
-				if err != nil {
-					return fmt.Errorf("failed to update documents: %w", err)
-				}
-			case "createIndex":
-				// Parse the index specification from the command
-				args := strings.Split(argsStr, ",")
-				if len(args) < 2 {
-					return fmt.Errorf("invalid createIndex command format: %s", cmd)
-				}
-				keys := bson.M{}
-				options := options.Index()
-
-				if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &keys); err != nil {
-					return fmt.Errorf("failed to parse index keys: %w", err)
-				}
-
-				if len(args) > 1 {
-					opts := bson.M{}
-					if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &opts); err != nil {
-						return fmt.Errorf("failed to parse index options: %w", err)
-					}
-
-					if unique, ok := opts["unique"].(bool); ok {
-						options.SetUnique(unique)
-					}
-					if sparse, ok := opts["sparse"].(bool); ok {
-						options.SetSparse(sparse)
-					}
-					if name, ok := opts["name"].(string); ok {
-						options.SetName(name)
-					}
-				}
-
-				_, err := db.Collection(parts[0]).Indexes().CreateOne(ctx, mongo.IndexModel{
-					Keys:    keys,
-					Options: options,
-				})
-				if err != nil && !strings.Contains(err.Error(), "IndexOptionsConflict") {
-					return fmt.Errorf("failed to create index: %w", err)
-				}
-			case "dropIndex":
-				// Parse the index name from the command
-				indexName := strings.Trim(argsStr, `'"`)
-				err := db.Collection(parts[0]).Indexes().DropOne(ctx, indexName)
-				if err != nil && !strings.Contains(err.Error(), "IndexNotFound") {
-					return fmt.Errorf("failed to drop index: %w", err)
-				}
-			case "deleteMany":
-				// Parse the filter from the command
-				filter := bson.M{}
-				if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &filter); err != nil {
-					return fmt.Errorf("failed to parse filter: %w", err)
-				}
-				_, err := db.Collection(parts[0]).DeleteMany(ctx, filter)
-				if err != nil {
-					return fmt.Errorf("failed to delete documents: %w", err)
-				}
-			case "dropCollection":
-				err := db.Collection(parts[0]).Drop(ctx)
-				if err != nil && !strings.Contains(err.Error(), "NamespaceNotFound") {
-					return fmt.Errorf("failed to drop collection: %w", err)
-				}
-			case "insertMany":
-				// Parse the documents from the command
-				docs := []interface{}{}
-				if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &docs); err != nil {
-					return fmt.Errorf("failed to parse documents: %w", err)
-				}
-				_, err := db.Collection(parts[0]).InsertMany(ctx, docs)
-				if err != nil {
-					return fmt.Errorf("failed to insert documents: %w", err)
-				}
-			case "updateOne":
-				// Parse the filter and update from the command
-				args := strings.Split(argsStr, ",")
-				if len(args) < 2 {
-					return fmt.Errorf("invalid updateOne command format: %s", cmd)
-				}
-				filter := bson.M{}
-				update := bson.M{}
-				if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
-					return fmt.Errorf("failed to parse filter: %w", err)
-				}
-				if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &update); err != nil {
-					return fmt.Errorf("failed to parse update: %w", err)
-				}
-				_, err := db.Collection(parts[0]).DeleteOne(ctx, filter)
-				if err != nil {
-					return fmt.Errorf("failed to delete document: %w", err)
-				}
-			case "deleteOne":
-				// Parse the filter from the command
-				filter := bson.M{}
-				if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &filter); err != nil {
-					return fmt.Errorf("failed to parse filter: %w", err)
-				}
-				_, err := db.Collection(parts[0]).DeleteOne(ctx, filter)
-				if err != nil {
-					return fmt.Errorf("failed to delete document: %w", err)
-				}
-			case "aggregate":
-				// Parse the pipeline from the command
-				pipeline := []bson.M{}
-				if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &pipeline); err != nil {
-					return fmt.Errorf("failed to parse pipeline: %w", err)
-				}
-				cursor, err := db.Collection(parts[0]).Aggregate(ctx, pipeline)
-				if err != nil {
-					return fmt.Errorf("failed to execute aggregation: %w", err)
-				}
-				defer cursor.Close(ctx)
-				// Just execute the aggregation, don't need to process results
-				for cursor.Next(ctx) {
-					// Do nothing, just consume the cursor
-				}
-				if err := cursor.Err(); err != nil {
-					return fmt.Errorf("aggregation cursor error: %w", err)
-				}
 			default:
-				return fmt.Errorf("unsupported operation: %s", operation)
+				// For other operations, we need the collection name
+				if len(parts) < 3 {
+					return fmt.Errorf("invalid command format: %s", cmd)
+				}
+				collectionName := parts[1]
+				operationWithArgs = parts[2]
+				operation = strings.Split(operationWithArgs, "(")[0]
+
+				switch operation {
+				case "insertOne":
+					// Parse the document from the command
+					doc := bson.M{}
+					if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &doc); err != nil {
+						return fmt.Errorf("failed to parse document: %w", err)
+					}
+					_, err := db.Collection(collectionName).InsertOne(ctx, doc)
+					if err != nil {
+						return fmt.Errorf("failed to insert document: %w", err)
+					}
+				case "updateMany":
+					// Parse the filter and update from the command
+					args := strings.Split(argsStr, ",")
+					if len(args) < 2 {
+						return fmt.Errorf("invalid updateMany command format: %s", cmd)
+					}
+					filter := bson.M{}
+					update := bson.M{}
+					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
+						return fmt.Errorf("failed to parse filter: %w", err)
+					}
+					if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &update); err != nil {
+						return fmt.Errorf("failed to parse update: %w", err)
+					}
+					_, err := db.Collection(collectionName).UpdateMany(ctx, filter, update)
+					if err != nil {
+						return fmt.Errorf("failed to update documents: %w", err)
+					}
+				case "createIndex":
+					// Parse the index specification from the command
+					args := strings.Split(argsStr, ",")
+					if len(args) < 2 {
+						return fmt.Errorf("invalid createIndex command format: %s", cmd)
+					}
+					keys := bson.M{}
+					options := options.Index()
+
+					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &keys); err != nil {
+						return fmt.Errorf("failed to parse index keys: %w", err)
+					}
+
+					if len(args) > 1 {
+						opts := bson.M{}
+						if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &opts); err != nil {
+							return fmt.Errorf("failed to parse index options: %w", err)
+						}
+
+						if unique, ok := opts["unique"].(bool); ok {
+							options.SetUnique(unique)
+						}
+						if sparse, ok := opts["sparse"].(bool); ok {
+							options.SetSparse(sparse)
+						}
+						if name, ok := opts["name"].(string); ok {
+							options.SetName(name)
+						}
+					}
+
+					// Convert bson.M to bson.D for index keys
+					indexKeys := bson.D{}
+					for k, v := range keys {
+						// Convert numeric values to int32
+						if num, ok := v.(float64); ok {
+							indexKeys = append(indexKeys, bson.E{Key: k, Value: int32(num)})
+						} else {
+							indexKeys = append(indexKeys, bson.E{Key: k, Value: v})
+						}
+					}
+
+					// Create the index
+					_, err := db.Collection(collectionName).Indexes().CreateOne(ctx, mongo.IndexModel{
+						Keys:    indexKeys,
+						Options: options,
+					})
+					if err != nil {
+						if strings.Contains(err.Error(), "IndexOptionsConflict") {
+							// Index already exists, which is fine
+							return nil
+						}
+						return fmt.Errorf("failed to create index: %w", err)
+					}
+				case "dropIndex":
+					// Parse the index name from the command
+					indexName := strings.Trim(argsStr, `'"`)
+					err := db.Collection(collectionName).Indexes().DropOne(ctx, indexName)
+					if err != nil && !strings.Contains(err.Error(), "IndexNotFound") {
+						return fmt.Errorf("failed to drop index: %w", err)
+					}
+				case "deleteMany":
+					// Parse the filter from the command
+					filter := bson.M{}
+					if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &filter); err != nil {
+						return fmt.Errorf("failed to parse filter: %w", err)
+					}
+					_, err := db.Collection(collectionName).DeleteMany(ctx, filter)
+					if err != nil {
+						return fmt.Errorf("failed to delete documents: %w", err)
+					}
+				case "drop":
+					// Drop the collection
+					err := db.Collection(collectionName).Drop(ctx)
+					if err != nil && !strings.Contains(err.Error(), "NamespaceNotFound") {
+						return fmt.Errorf("failed to drop collection: %w", err)
+					}
+				case "insertMany":
+					// Parse the documents from the command
+					docs := []interface{}{}
+					if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &docs); err != nil {
+						return fmt.Errorf("failed to parse documents: %w", err)
+					}
+					_, err := db.Collection(collectionName).InsertMany(ctx, docs)
+					if err != nil {
+						return fmt.Errorf("failed to insert documents: %w", err)
+					}
+				case "updateOne":
+					// Parse the filter and update from the command
+					args := strings.Split(argsStr, ",")
+					if len(args) < 2 {
+						return fmt.Errorf("invalid updateOne command format: %s", cmd)
+					}
+					filter := bson.M{}
+					update := bson.M{}
+					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
+						return fmt.Errorf("failed to parse filter: %w", err)
+					}
+					if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &update); err != nil {
+						return fmt.Errorf("failed to parse update: %w", err)
+					}
+					_, err := db.Collection(collectionName).UpdateOne(ctx, filter, update)
+					if err != nil {
+						return fmt.Errorf("failed to update document: %w", err)
+					}
+				case "deleteOne":
+					// Parse the filter from the command
+					filter := bson.M{}
+					if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &filter); err != nil {
+						return fmt.Errorf("failed to parse filter: %w", err)
+					}
+					_, err := db.Collection(collectionName).DeleteOne(ctx, filter)
+					if err != nil {
+						return fmt.Errorf("failed to delete document: %w", err)
+					}
+				case "aggregate":
+					// Parse the pipeline from the command
+					pipeline := []bson.M{}
+					if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &pipeline); err != nil {
+						return fmt.Errorf("failed to parse pipeline: %w", err)
+					}
+					cursor, err := db.Collection(collectionName).Aggregate(ctx, pipeline)
+					if err != nil {
+						return fmt.Errorf("failed to execute aggregation: %w", err)
+					}
+					defer cursor.Close(ctx)
+					// Just execute the aggregation, don't need to process results
+					for cursor.Next(ctx) {
+						// Do nothing, just consume the cursor
+					}
+					if err := cursor.Err(); err != nil {
+						return fmt.Errorf("aggregation cursor error: %w", err)
+					}
+				default:
+					return fmt.Errorf("unsupported operation: %s", operation)
+				}
 			}
 		} else {
 			return fmt.Errorf("unsupported command format: %s", cmd)

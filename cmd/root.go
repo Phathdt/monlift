@@ -8,12 +8,16 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-const serviceName = "monlift"
+const (
+	serviceName = "monlift"
+	version     = "1.0.0"
+)
 
 func Execute() {
 	app := &cli.App{
-		Name:  serviceName,
-		Usage: fmt.Sprintf("start %s", serviceName),
+		Name:    serviceName,
+		Usage:   fmt.Sprintf("start %s", serviceName),
+		Version: version,
 		Commands: []*cli.Command{
 			{
 				Name:   "up",
@@ -35,6 +39,11 @@ func Execute() {
 				Name:   "status",
 				Usage:  "Show migration status",
 				Action: statusCommand,
+			},
+			{
+				Name:   "version",
+				Usage:  "Show version information",
+				Action: versionCommand,
 			},
 		},
 	}

@@ -328,6 +328,240 @@ func TestExecuteMongoScript(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:   "create timeseries collection",
+			script: `db.createCollection("timeseries_test", {"timeseries": {"timeField": "timestamp", "metaField": "sensorId", "granularity": "hours"}})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				// Get collection info
+				var result bson.M
+				err := db.RunCommand(context.Background(), bson.D{
+					{Key: "listCollections", Value: 1},
+					{Key: "filter", Value: bson.D{{Key: "name", Value: "timeseries_test"}}},
+				}).Decode(&result)
+				if err != nil {
+					t.Errorf("Failed to get collection info: %v", err)
+					return
+				}
+
+				// Verify timeseries options
+				cursor := result["cursor"].(bson.D)
+				for _, elem := range cursor {
+					if elem.Key == "firstBatch" {
+						firstBatch := elem.Value.(bson.A)
+						if len(firstBatch) == 0 {
+							t.Error("No collection found")
+							return
+						}
+
+						collection := firstBatch[0].(bson.D)
+						for _, colElem := range collection {
+							if colElem.Key == "options" {
+								options := colElem.Value.(bson.D)
+								for _, optElem := range options {
+									if optElem.Key == "timeseries" {
+										timeseries := optElem.Value.(bson.D)
+										for _, tsElem := range timeseries {
+											switch tsElem.Key {
+											case "timeField":
+												if timeField := tsElem.Value.(string); timeField != "timestamp" {
+													t.Errorf("Unexpected timeField: got %v, want timestamp", timeField)
+												}
+											case "metaField":
+												if metaField := tsElem.Value.(string); metaField != "sensorId" {
+													t.Errorf("Unexpected metaField: got %v, want sensorId", metaField)
+												}
+											case "granularity":
+												if granularity := tsElem.Value.(string); granularity != "hours" {
+													t.Errorf("Unexpected granularity: got %v, want hours", granularity)
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+		},
+		{
+			name:   "create collection with validation",
+			script: `db.createCollection("validation_test", {"validator": {"$jsonSchema": {"bsonType": "object", "required": ["name", "age"], "properties": {"name": {"bsonType": "string"}, "age": {"bsonType": "int"}}}, "validationLevel": "strict", "validationAction": "error"}})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				// Get collection info
+				var result bson.M
+				err := db.RunCommand(context.Background(), bson.D{
+					{Key: "listCollections", Value: 1},
+					{Key: "filter", Value: bson.D{{Key: "name", Value: "validation_test"}}},
+				}).Decode(&result)
+				if err != nil {
+					t.Errorf("Failed to get collection info: %v", err)
+					return
+				}
+
+				// Verify validation options
+				cursor := result["cursor"].(bson.D)
+				for _, elem := range cursor {
+					if elem.Key == "firstBatch" {
+						firstBatch := elem.Value.(bson.A)
+						if len(firstBatch) == 0 {
+							t.Error("No collection found")
+							return
+						}
+
+						collection := firstBatch[0].(bson.D)
+						for _, colElem := range collection {
+							if colElem.Key == "options" {
+								options := colElem.Value.(bson.D)
+								for _, optElem := range options {
+									if optElem.Key == "validator" {
+										validator := optElem.Value.(bson.D)
+										for _, valElem := range validator {
+											if valElem.Key == "$jsonSchema" {
+												schema := valElem.Value.(bson.D)
+												for _, schemaElem := range schema {
+													switch schemaElem.Key {
+													case "bsonType":
+														if bsonType := schemaElem.Value.(string); bsonType != "object" {
+															t.Errorf("Unexpected bsonType: got %v, want object", bsonType)
+														}
+													case "required":
+														required := schemaElem.Value.(bson.A)
+														requiredFields := []string{"name", "age"}
+														for i, field := range requiredFields {
+															if required[i].(string) != field {
+																t.Errorf("Missing required field: %v", field)
+															}
+														}
+													case "properties":
+														properties := schemaElem.Value.(bson.D)
+														for _, propElem := range properties {
+															switch propElem.Key {
+															case "name":
+																nameType := propElem.Value.(bson.D)[0].Value.(string)
+																if nameType != "string" {
+																	t.Errorf("Unexpected name type: got %v, want string", nameType)
+																}
+															case "age":
+																ageType := propElem.Value.(bson.D)[0].Value.(string)
+																if ageType != "int" {
+																	t.Errorf("Unexpected age type: got %v, want int", ageType)
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+		},
+		{
+			name:   "create collection with both timeseries and validation",
+			script: `db.createCollection("combined_test", {"timeseries": {"timeField": "timestamp", "metaField": "sensorId", "granularity": "hours"}, "validator": {"$jsonSchema": {"bsonType": "object", "required": ["sensorId", "value", "timestamp"], "properties": {"sensorId": {"bsonType": "string"}, "value": {"bsonType": "double"}, "timestamp": {"bsonType": "date"}}}, "validationLevel": "strict", "validationAction": "error"}})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				// Get collection info
+				var result bson.M
+				err := db.RunCommand(context.Background(), bson.D{
+					{Key: "listCollections", Value: 1},
+					{Key: "filter", Value: bson.D{{Key: "name", Value: "combined_test"}}},
+				}).Decode(&result)
+				if err != nil {
+					t.Errorf("Failed to get collection info: %v", err)
+					return
+				}
+
+				// Verify both timeseries and validation options
+				cursor := result["cursor"].(bson.D)
+				for _, elem := range cursor {
+					if elem.Key == "firstBatch" {
+						firstBatch := elem.Value.(bson.A)
+						if len(firstBatch) == 0 {
+							t.Error("No collection found")
+							return
+						}
+
+						collection := firstBatch[0].(bson.D)
+						for _, colElem := range collection {
+							if colElem.Key == "options" {
+								options := colElem.Value.(bson.D)
+								for _, optElem := range options {
+									switch optElem.Key {
+									case "timeseries":
+										timeseries := optElem.Value.(bson.D)
+										for _, tsElem := range timeseries {
+											switch tsElem.Key {
+											case "timeField":
+												if timeField := tsElem.Value.(string); timeField != "timestamp" {
+													t.Errorf("Unexpected timeField: got %v, want timestamp", timeField)
+												}
+											case "metaField":
+												if metaField := tsElem.Value.(string); metaField != "sensorId" {
+													t.Errorf("Unexpected metaField: got %v, want sensorId", metaField)
+												}
+											case "granularity":
+												if granularity := tsElem.Value.(string); granularity != "hours" {
+													t.Errorf("Unexpected granularity: got %v, want hours", granularity)
+												}
+											}
+										}
+									case "validator":
+										validator := optElem.Value.(bson.D)
+										for _, valElem := range validator {
+											if valElem.Key == "$jsonSchema" {
+												schema := valElem.Value.(bson.D)
+												for _, schemaElem := range schema {
+													switch schemaElem.Key {
+													case "bsonType":
+														if bsonType := schemaElem.Value.(string); bsonType != "object" {
+															t.Errorf("Unexpected bsonType: got %v, want object", bsonType)
+														}
+													case "required":
+														required := schemaElem.Value.(bson.A)
+														requiredFields := []string{"sensorId", "value", "timestamp"}
+														for i, field := range requiredFields {
+															if required[i].(string) != field {
+																t.Errorf("Missing required field: %v", field)
+															}
+														}
+													case "properties":
+														properties := schemaElem.Value.(bson.D)
+														for _, propElem := range properties {
+															switch propElem.Key {
+															case "sensorId":
+																sensorIdType := propElem.Value.(bson.D)[0].Value.(string)
+																if sensorIdType != "string" {
+																	t.Errorf("Unexpected sensorId type: got %v, want string", sensorIdType)
+																}
+															case "value":
+																valueType := propElem.Value.(bson.D)[0].Value.(string)
+																if valueType != "double" {
+																	t.Errorf("Unexpected value type: got %v, want double", valueType)
+																}
+															case "timestamp":
+																timestampType := propElem.Value.(bson.D)[0].Value.(string)
+																if timestampType != "date" {
+																	t.Errorf("Unexpected timestamp type: got %v, want date", timestampType)
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {

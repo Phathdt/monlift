@@ -2,12 +2,15 @@ package migration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -20,6 +23,32 @@ type Migration struct {
 	db       *mongo.Database
 }
 
+type TimeSeriesOptions struct {
+	TimeField   string `validate:"required"`
+	MetaField   string `validate:"required"`
+	Granularity string `validate:"required,oneof=seconds minutes hours days"`
+}
+
+type Property struct {
+	BsonType    string `validate:"required,oneof=string int double date object array"`
+	Description string `validate:"required"`
+	Pattern     string `validate:"omitempty"`
+	MinLength   int    `validate:"omitempty,min=1"`
+	Minimum     int    `validate:"omitempty"`
+}
+
+type Schema struct {
+	BsonType   string              `validate:"required,oneof=object array"`
+	Required   []string            `validate:"required"`
+	Properties map[string]Property `validate:"required"`
+}
+
+type ValidatorOptions struct {
+	ValidationLevel  string `validate:"omitempty,oneof=off moderate strict"`
+	ValidationAction string `validate:"omitempty,oneof=error warn"`
+	Schema           Schema `validate:"required"`
+}
+
 func NewMigration(version, upPath, downPath string, db *mongo.Database) *Migration {
 	return &Migration{
 		Version:  version,
@@ -27,6 +56,18 @@ func NewMigration(version, upPath, downPath string, db *mongo.Database) *Migrati
 		DownPath: downPath,
 		db:       db,
 	}
+}
+
+// convertMongoShellToJSON converts MongoDB shell format to valid JSON
+func convertMongoShellToJSON(input string) string {
+	// Replace single quotes with double quotes
+	input = strings.ReplaceAll(input, "'", "\"")
+
+	// Regex to match unquoted property names
+	re := regexp.MustCompile(`([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)(\s*:)`)
+
+	// Replace unquoted property names with quoted ones
+	return re.ReplaceAllString(input, `$1"$2"$3`)
 }
 
 func initVersionsCollection(db *mongo.Database) error {
@@ -100,15 +141,117 @@ func executeMongoScript(db *mongo.Database, script string) error {
 
 			switch operation {
 			case "createCollection":
-				// Get collection name from arguments
-				collectionName := strings.Trim(argsStr, `'"`)
+				// Get collection name and options from arguments
+				args := strings.SplitN(argsStr, ",", 2)
+				collectionName := strings.Trim(args[0], `'"`)
 				if collectionName == "" {
 					return fmt.Errorf("collection name cannot be empty")
 				}
-				err := db.CreateCollection(ctx, collectionName)
-				if err != nil && !strings.Contains(err.Error(), "NamespaceExists") {
+
+				// Parse options if provided
+				opts := options.CreateCollection()
+				var err error
+				if len(args) > 1 {
+					// Clean up the JSON string
+					jsonStr := strings.TrimSpace(args[1])
+					jsonStr = convertMongoShellToJSON(jsonStr)
+
+					// Parse and re-encode to standardize format
+					var jsonData any
+					if err = json.Unmarshal([]byte(jsonStr), &jsonData); err != nil {
+						return fmt.Errorf("failed to parse JSON: %w", err)
+					}
+
+					standardizedJSON, err := json.Marshal(jsonData)
+					if err != nil {
+						return fmt.Errorf("failed to standardize JSON: %w", err)
+					}
+
+					optsMap := bson.M{}
+					if err = bson.UnmarshalExtJSON(standardizedJSON, true, &optsMap); err != nil {
+						return fmt.Errorf("failed to parse collection options: %w", err)
+					}
+
+					// Handle timeseries options
+					if timeseries, ok := optsMap["timeseries"].(bson.M); ok {
+						tsOpts := TimeSeriesOptions{
+							TimeField:   timeseries["timeField"].(string),
+							MetaField:   timeseries["metaField"].(string),
+							Granularity: timeseries["granularity"].(string),
+						}
+
+						validate := validator.New()
+						if err := validate.Struct(tsOpts); err != nil {
+							return fmt.Errorf("invalid timeseries options: %w", err)
+						}
+
+						timeseriesOpts := options.TimeSeries().
+							SetTimeField(tsOpts.TimeField).
+							SetMetaField(tsOpts.MetaField).
+							SetGranularity(tsOpts.Granularity)
+
+						opts = options.CreateCollection().SetTimeSeriesOptions(timeseriesOpts)
+					}
+
+					// Handle validator options
+					if validatorOpts, ok := optsMap["validator"].(bson.M); ok {
+						valOpts := ValidatorOptions{}
+
+						// Parse validation level
+						if level, ok := optsMap["validationLevel"].(string); ok {
+							valOpts.ValidationLevel = level
+						}
+
+						// Parse validation action
+						if action, ok := optsMap["validationAction"].(string); ok {
+							valOpts.ValidationAction = action
+						}
+
+						// Parse schema
+						if schema, ok := validatorOpts["$jsonSchema"].(bson.M); ok {
+							valOpts.Schema.BsonType = schema["bsonType"].(string)
+							valOpts.Schema.Required = convertToStringSlice(schema["required"].(bson.A))
+
+							// Parse properties
+							valOpts.Schema.Properties = make(map[string]Property)
+
+							if props, ok := schema["properties"].(bson.M); ok {
+								for key, value := range props {
+									prop := value.(bson.M)
+									valOpts.Schema.Properties[key] = Property{
+										BsonType:    prop["bsonType"].(string),
+										Description: prop["description"].(string),
+										Pattern:     getStringOrDefault(prop, "pattern"),
+										MinLength:   getIntOrDefault(prop, "minLength"),
+										Minimum:     getIntOrDefault(prop, "minimum"),
+									}
+								}
+							}
+						}
+
+						validate := validator.New()
+						if err := validate.Struct(valOpts); err != nil {
+							return fmt.Errorf("invalid validator options: %w", err)
+						}
+
+						opts.SetValidator(validatorOpts)
+					}
+
+					// Handle validation level
+					if validationLevel, ok := optsMap["validationLevel"].(string); ok {
+						opts.SetValidationLevel(validationLevel)
+					}
+
+					// Handle validation action
+					if validationAction, ok := optsMap["validationAction"].(string); ok {
+						opts.SetValidationAction(validationAction)
+					}
+				}
+
+				if err = db.CreateCollection(ctx, collectionName, opts); err != nil {
 					return fmt.Errorf("failed to create collection: %w", err)
 				}
+
 			default:
 				// For other operations, we need the collection name
 				if len(parts) < 3 {
@@ -156,25 +299,21 @@ func executeMongoScript(db *mongo.Database, script string) error {
 					keys := bson.M{}
 					options := options.Index()
 
-					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &keys); err != nil {
-						return fmt.Errorf("failed to parse index keys: %w", err)
+					// Parse and re-encode keys to standardize format
+					keysStr := strings.TrimSpace(args[0])
+					keysStr = convertMongoShellToJSON(keysStr)
+
+					var keysData interface{}
+					if err := json.Unmarshal([]byte(keysStr), &keysData); err != nil {
+						return fmt.Errorf("failed to parse index keys JSON: %w", err)
+					}
+					standardizedKeys, err := json.Marshal(keysData)
+					if err != nil {
+						return fmt.Errorf("failed to standardize index keys JSON: %w", err)
 					}
 
-					if len(args) > 1 {
-						opts := bson.M{}
-						if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &opts); err != nil {
-							return fmt.Errorf("failed to parse index options: %w", err)
-						}
-
-						if unique, ok := opts["unique"].(bool); ok {
-							options.SetUnique(unique)
-						}
-						if sparse, ok := opts["sparse"].(bool); ok {
-							options.SetSparse(sparse)
-						}
-						if name, ok := opts["name"].(string); ok {
-							options.SetName(name)
-						}
+					if err := bson.UnmarshalExtJSON(standardizedKeys, true, &keys); err != nil {
+						return fmt.Errorf("failed to parse index keys: %w", err)
 					}
 
 					// Convert bson.M to bson.D for index keys
@@ -188,8 +327,38 @@ func executeMongoScript(db *mongo.Database, script string) error {
 						}
 					}
 
+					if len(args) > 1 {
+						// Parse and re-encode options to standardize format
+						optsStr := strings.TrimSpace(args[1])
+						optsStr = convertMongoShellToJSON(optsStr)
+
+						var optsData interface{}
+						if err := json.Unmarshal([]byte(optsStr), &optsData); err != nil {
+							return fmt.Errorf("failed to parse index options JSON: %w", err)
+						}
+						standardizedOpts, err := json.Marshal(optsData)
+						if err != nil {
+							return fmt.Errorf("failed to standardize index options JSON: %w", err)
+						}
+
+						indexOpts := bson.M{}
+						if err := bson.UnmarshalExtJSON(standardizedOpts, true, &indexOpts); err != nil {
+							return fmt.Errorf("failed to parse index options: %w", err)
+						}
+
+						if unique, ok := indexOpts["unique"].(bool); ok {
+							options.SetUnique(unique)
+						}
+						if sparse, ok := indexOpts["sparse"].(bool); ok {
+							options.SetSparse(sparse)
+						}
+						if name, ok := indexOpts["name"].(string); ok {
+							options.SetName(name)
+						}
+					}
+
 					// Create the index
-					_, err := db.Collection(collectionName).Indexes().CreateOne(ctx, mongo.IndexModel{
+					_, err = db.Collection(collectionName).Indexes().CreateOne(ctx, mongo.IndexModel{
 						Keys:    indexKeys,
 						Options: options,
 					})
@@ -451,4 +620,26 @@ func GetMigrationStatus(db *mongo.Database, dir string) ([]MigrationStatus, erro
 	}
 
 	return status, nil
+}
+
+func convertToStringSlice(arr bson.A) []string {
+	result := make([]string, len(arr))
+	for i, v := range arr {
+		result[i] = v.(string)
+	}
+	return result
+}
+
+func getStringOrDefault(m bson.M, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func getIntOrDefault(m bson.M, key string) int {
+	if v, ok := m[key].(int); ok {
+		return v
+	}
+	return 0
 }

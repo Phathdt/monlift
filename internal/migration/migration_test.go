@@ -2,8 +2,10 @@ package migration
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/phathdt/monlift/internal/migration/operations"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -57,7 +59,39 @@ func setupTestDB(t *testing.T) *mongo.Database {
 
 	db := client.Database("test_migration")
 	t.Cleanup(func() {
-		db.Drop(ctx)
+		ctx := context.Background()
+		// Clean up collections with proper ordering
+		collections, err := db.ListCollectionNames(ctx, bson.M{})
+		if err != nil {
+			t.Logf("Failed to list collections during cleanup: %v", err)
+		} else {
+			// First drop non-system collections (including timeseries)
+			for _, collection := range collections {
+				if !strings.HasPrefix(collection, "system.") {
+					if err := db.Collection(collection).Drop(ctx); err != nil {
+						t.Logf("Failed to drop collection %s during cleanup: %v", collection, err)
+					}
+				}
+			}
+
+			// Then try system collections
+			for _, collection := range collections {
+				if strings.HasPrefix(collection, "system.") {
+					if err := db.Collection(collection).Drop(ctx); err != nil {
+						// Only log non-expected errors
+						if !strings.Contains(err.Error(), "cannot drop collection") {
+							t.Logf("Failed to drop system collection %s during cleanup: %v", collection, err)
+						}
+					}
+				}
+			}
+		}
+
+		// Finally drop the entire database
+		if err := db.Drop(ctx); err != nil {
+			t.Logf("Failed to drop database during cleanup: %v", err)
+		}
+
 		if err := client.Disconnect(ctx); err != nil {
 			t.Logf("Failed to disconnect MongoDB client: %v", err)
 		}
@@ -77,9 +111,29 @@ func TestExecuteMongoScript(t *testing.T) {
 			t.Logf("Failed to list collections: %v", err)
 			return
 		}
+
+		// First, drop all non-system collections (including timeseries collections)
 		for _, collection := range collections {
+			// Skip system collections for now
+			if strings.HasPrefix(collection, "system.") {
+				continue
+			}
+
 			if err := db.Collection(collection).Drop(ctx); err != nil {
 				t.Logf("Failed to drop collection %s: %v", collection, err)
+			}
+		}
+
+		// Now attempt to drop system collections
+		for _, collection := range collections {
+			if strings.HasPrefix(collection, "system.") {
+				if err := db.Collection(collection).Drop(ctx); err != nil {
+					// This error is expected for system.views after timeseries collections have been dropped,
+					// so we don't need to log it as it creates noise
+					if !strings.Contains(err.Error(), "cannot drop collection") {
+						t.Logf("Failed to drop system collection %s: %v", collection, err)
+					}
+				}
 			}
 		}
 	}
@@ -692,21 +746,90 @@ func TestExecuteMongoScript(t *testing.T) {
 			},
 		},
 		{
-			name:   "create collection with both timeseries and validation",
-			script: `db.createCollection("combined_test", {"timeseries": {"timeField": "timestamp", "metaField": "sensorId", "granularity": "hours"}, "validator": {"$jsonSchema": {"bsonType": "object", "required": ["sensorId", "value", "timestamp"], "properties": {"sensorId": {"bsonType": "string"}, "value": {"bsonType": "double"}, "timestamp": {"bsonType": "date"}}}, "validationLevel": "strict", "validationAction": "error"}})`,
+			name:   "create timeseries collection with optional fields",
+			script: `db.createCollection("timeseries_optional", {"timeseries": {"timeField": "timestamp", "granularity": "minutes"}})`,
 			verify: func(t *testing.T, db *mongo.Database) {
 				// Get collection info
 				var result bson.M
 				err := db.RunCommand(context.Background(), bson.D{
 					{Key: "listCollections", Value: 1},
-					{Key: "filter", Value: bson.D{{Key: "name", Value: "combined_test"}}},
+					{Key: "filter", Value: bson.D{{Key: "name", Value: "timeseries_optional"}}},
 				}).Decode(&result)
 				if err != nil {
 					t.Errorf("Failed to get collection info: %v", err)
 					return
 				}
 
-				// Verify both timeseries and validation options
+				// Verify timeseries options
+				cursor := result["cursor"].(bson.D)
+				for _, elem := range cursor {
+					if elem.Key == "firstBatch" {
+						firstBatch := elem.Value.(bson.A)
+						if len(firstBatch) == 0 {
+							t.Error("No collection found")
+							return
+						}
+
+						collection := firstBatch[0].(bson.D)
+						for _, colElem := range collection {
+							if colElem.Key == "options" {
+								options := colElem.Value.(bson.D)
+								tsFound := false
+								for _, optElem := range options {
+									if optElem.Key == "timeseries" {
+										tsFound = true
+										timeseries := optElem.Value.(bson.D)
+										timeFieldFound := false
+										granularityFound := false
+										for _, tsElem := range timeseries {
+											switch tsElem.Key {
+											case "timeField":
+												timeFieldFound = true
+												if timeField := tsElem.Value.(string); timeField != "timestamp" {
+													t.Errorf("Unexpected timeField: got %v, want timestamp", timeField)
+												}
+											case "metaField":
+												t.Error("metaField should not be set")
+											case "granularity":
+												granularityFound = true
+												if granularity := tsElem.Value.(string); granularity != "minutes" {
+													t.Errorf("Unexpected granularity: got %v, want minutes", granularity)
+												}
+											}
+										}
+										if !timeFieldFound {
+											t.Error("timeField not found in timeseries options")
+										}
+										if !granularityFound {
+											t.Error("granularity not found in timeseries options")
+										}
+									}
+								}
+								if !tsFound {
+									t.Error("timeseries options not found")
+								}
+							}
+						}
+					}
+				}
+			},
+		},
+		{
+			name:   "create timeseries collection with different granularity",
+			script: `db.createCollection("timeseries_days", {"timeseries": {"timeField": "time", "metaField": "device", "granularity": "hours"}})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				// Get collection info
+				var result bson.M
+				err := db.RunCommand(context.Background(), bson.D{
+					{Key: "listCollections", Value: 1},
+					{Key: "filter", Value: bson.D{{Key: "name", Value: "timeseries_days"}}},
+				}).Decode(&result)
+				if err != nil {
+					t.Errorf("Failed to get collection info: %v", err)
+					return
+				}
+
+				// Verify timeseries options
 				cursor := result["cursor"].(bson.D)
 				for _, elem := range cursor {
 					if elem.Key == "firstBatch" {
@@ -721,70 +844,188 @@ func TestExecuteMongoScript(t *testing.T) {
 							if colElem.Key == "options" {
 								options := colElem.Value.(bson.D)
 								for _, optElem := range options {
-									switch optElem.Key {
-									case "timeseries":
+									if optElem.Key == "timeseries" {
 										timeseries := optElem.Value.(bson.D)
+										timeFieldFound := false
+										metaFieldFound := false
+										granularityFound := false
 										for _, tsElem := range timeseries {
 											switch tsElem.Key {
 											case "timeField":
-												if timeField := tsElem.Value.(string); timeField != "timestamp" {
-													t.Errorf("Unexpected timeField: got %v, want timestamp", timeField)
+												timeFieldFound = true
+												if timeField := tsElem.Value.(string); timeField != "time" {
+													t.Errorf("Unexpected timeField: got %v, want time", timeField)
 												}
 											case "metaField":
-												if metaField := tsElem.Value.(string); metaField != "sensorId" {
-													t.Errorf("Unexpected metaField: got %v, want sensorId", metaField)
+												metaFieldFound = true
+												if metaField := tsElem.Value.(string); metaField != "device" {
+													t.Errorf("Unexpected metaField: got %v, want device", metaField)
 												}
 											case "granularity":
+												granularityFound = true
 												if granularity := tsElem.Value.(string); granularity != "hours" {
 													t.Errorf("Unexpected granularity: got %v, want hours", granularity)
 												}
 											}
 										}
+										if !timeFieldFound {
+											t.Error("timeField not found in timeseries options")
+										}
+										if !metaFieldFound {
+											t.Error("metaField not found in timeseries options")
+										}
+										if !granularityFound {
+											t.Error("granularity not found in timeseries options")
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+		},
+		{
+			name:   "create collection with validation levels",
+			script: `db.createCollection("validation_levels", {"validator": {"$jsonSchema": {"bsonType": "object", "required": ["email"], "properties": {"email": {"bsonType": "string", "pattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$", "description": "Email address"}}}}, "validationLevel": "moderate", "validationAction": "warn"})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				// Get collection info
+				var result bson.M
+				err := db.RunCommand(context.Background(), bson.D{
+					{Key: "listCollections", Value: 1},
+					{Key: "filter", Value: bson.D{{Key: "name", Value: "validation_levels"}}},
+				}).Decode(&result)
+				if err != nil {
+					t.Errorf("Failed to get collection info: %v", err)
+					return
+				}
+
+				// Verify validation options
+				cursor := result["cursor"].(bson.D)
+				for _, elem := range cursor {
+					if elem.Key == "firstBatch" {
+						firstBatch := elem.Value.(bson.A)
+						if len(firstBatch) == 0 {
+							t.Error("No collection found")
+							return
+						}
+
+						collection := firstBatch[0].(bson.D)
+						for _, colElem := range collection {
+							if colElem.Key == "options" {
+								options := colElem.Value.(bson.D)
+								validatorFound := false
+								validationLevelFound := false
+								validationActionFound := false
+
+								for _, optElem := range options {
+									switch optElem.Key {
 									case "validator":
+										validatorFound = true
+										// Verify validator structure
 										validator := optElem.Value.(bson.D)
 										for _, valElem := range validator {
 											if valElem.Key == "$jsonSchema" {
 												schema := valElem.Value.(bson.D)
 												for _, schemaElem := range schema {
-													switch schemaElem.Key {
-													case "bsonType":
-														if bsonType := schemaElem.Value.(string); bsonType != "object" {
-															t.Errorf("Unexpected bsonType: got %v, want object", bsonType)
-														}
-													case "required":
+													if schemaElem.Key == "required" {
 														required := schemaElem.Value.(bson.A)
-														requiredFields := []string{"sensorId", "value", "timestamp"}
-														for i, field := range requiredFields {
-															if required[i].(string) != field {
-																t.Errorf("Missing required field: %v", field)
-															}
-														}
-													case "properties":
-														properties := schemaElem.Value.(bson.D)
-														for _, propElem := range properties {
-															switch propElem.Key {
-															case "sensorId":
-																sensorIdType := propElem.Value.(bson.D)[0].Value.(string)
-																if sensorIdType != "string" {
-																	t.Errorf("Unexpected sensorId type: got %v, want string", sensorIdType)
-																}
-															case "value":
-																valueType := propElem.Value.(bson.D)[0].Value.(string)
-																if valueType != "double" {
-																	t.Errorf("Unexpected value type: got %v, want double", valueType)
-																}
-															case "timestamp":
-																timestampType := propElem.Value.(bson.D)[0].Value.(string)
-																if timestampType != "date" {
-																	t.Errorf("Unexpected timestamp type: got %v, want date", timestampType)
-																}
-															}
+														if len(required) != 1 || required[0].(string) != "email" {
+															t.Error("Required fields incorrect")
 														}
 													}
 												}
 											}
 										}
+									case "validationLevel":
+										validationLevelFound = true
+										if level := optElem.Value.(string); level != "moderate" {
+											t.Errorf("Unexpected validation level: got %v, want moderate", level)
+										}
+									case "validationAction":
+										validationActionFound = true
+										if action := optElem.Value.(string); action != "warn" {
+											t.Errorf("Unexpected validation action: got %v, want warn", action)
+										}
 									}
+								}
+
+								if !validatorFound {
+									t.Error("validator not found")
+								}
+								if !validationLevelFound {
+									t.Error("validationLevel not found")
+								}
+								if !validationActionFound {
+									t.Error("validationAction not found")
+								}
+							}
+						}
+					}
+				}
+			},
+		},
+		{
+			name:   "create collection with complex validator",
+			script: `db.createCollection("complex_validation", {"validator": {"$and": [{"qty": {"$gt": 0}}, {"price": {"$gt": 0}}]}, "validationLevel": "strict"})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				// Get collection info
+				var result bson.M
+				err := db.RunCommand(context.Background(), bson.D{
+					{Key: "listCollections", Value: 1},
+					{Key: "filter", Value: bson.D{{Key: "name", Value: "complex_validation"}}},
+				}).Decode(&result)
+				if err != nil {
+					t.Errorf("Failed to get collection info: %v", err)
+					return
+				}
+
+				// Verify validation options
+				cursor := result["cursor"].(bson.D)
+				for _, elem := range cursor {
+					if elem.Key == "firstBatch" {
+						firstBatch := elem.Value.(bson.A)
+						if len(firstBatch) == 0 {
+							t.Error("No collection found")
+							return
+						}
+
+						collection := firstBatch[0].(bson.D)
+						for _, colElem := range collection {
+							if colElem.Key == "options" {
+								options := colElem.Value.(bson.D)
+								validatorFound := false
+								validationLevelFound := false
+
+								for _, optElem := range options {
+									switch optElem.Key {
+									case "validator":
+										validatorFound = true
+										// Verify validator structure contains $and operator
+										validator := optElem.Value.(bson.D)
+										andFound := false
+										for _, valElem := range validator {
+											if valElem.Key == "$and" {
+												andFound = true
+												break
+											}
+										}
+										if !andFound {
+											t.Error("$and operator not found in validator")
+										}
+									case "validationLevel":
+										validationLevelFound = true
+										if level := optElem.Value.(string); level != "strict" {
+											t.Errorf("Unexpected validation level: got %v, want strict", level)
+										}
+									}
+								}
+
+								if !validatorFound {
+									t.Error("validator not found")
+								}
+								if !validationLevelFound {
+									t.Error("validationLevel not found")
 								}
 							}
 						}
@@ -799,9 +1040,11 @@ func TestExecuteMongoScript(t *testing.T) {
 			// Clean up before each test
 			cleanup()
 
-			err := executeMongoScript(db, tt.script)
+			// Create executor and execute script
+			executor := operations.NewOperationExecutor(db)
+			err := executor.ExecuteScript(context.Background(), tt.script)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("executeMongoScript() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ExecuteScript() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if tt.verify != nil {

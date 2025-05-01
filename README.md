@@ -7,6 +7,7 @@ A MongoDB migration tool written in Go, inspired by Goose and Prisma. This tool 
 - Create and manage MongoDB migrations
 - Run migrations up and down
 - Track migration status
+- Check version information
 - Support for various MongoDB operations:
   - Create/drop collections
   - Create/drop indexes
@@ -65,6 +66,21 @@ Version    Status    Applied At
 -------    ------    ----------
 20240101   Applied   2024-01-01 10:00:00
 20240102   Pending
+```
+
+### Check version
+
+```bash
+monlift version
+# or
+monlift --version
+# or
+monlift -v
+```
+
+Output example:
+```
+monlift version 1.0.0
 ```
 
 ## Migration Scripts
@@ -139,6 +155,15 @@ make build
 ```bash
 make test
 ```
+
+## Project Status
+
+### Completed Features
+- ✅ Basic migration commands (up, down, create, status)
+- ✅ Version command
+- ✅ MongoDB operations support
+- ✅ Migration tracking
+- ✅ Environment configuration
 
 ## License
 

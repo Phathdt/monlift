@@ -10,7 +10,7 @@ import (
 // InsertOneOperation represents an operation to insert a single document
 type InsertOneOperation struct {
 	CollectionName string
-	Document       interface{}
+	Document       any
 }
 
 // Execute inserts a single document into a collection
@@ -25,7 +25,7 @@ func (i *InsertOneOperation) Execute(ctx context.Context, db *mongo.Database) er
 // InsertManyOperation represents an operation to insert multiple documents
 type InsertManyOperation struct {
 	CollectionName string
-	Documents      []interface{}
+	Documents      []any
 }
 
 // Execute inserts multiple documents into a collection

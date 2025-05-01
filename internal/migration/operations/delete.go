@@ -10,7 +10,7 @@ import (
 // DeleteOneOperation represents an operation to delete a single document
 type DeleteOneOperation struct {
 	CollectionName string
-	Filter         interface{}
+	Filter         any
 }
 
 // Execute deletes a single document from a collection
@@ -25,7 +25,7 @@ func (d *DeleteOneOperation) Execute(ctx context.Context, db *mongo.Database) er
 // DeleteManyOperation represents an operation to delete multiple documents
 type DeleteManyOperation struct {
 	CollectionName string
-	Filter         interface{}
+	Filter         any
 }
 
 // Execute deletes multiple documents from a collection

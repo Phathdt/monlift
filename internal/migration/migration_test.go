@@ -380,7 +380,7 @@ func TestExecuteMongoScript(t *testing.T) {
 						}
 
 						// Function to check filter expression regardless of type (bson.M or bson.D)
-						checkFilter := func(filter interface{}) bool {
+						checkFilter := func(filter any) bool {
 							switch typedFilter := filter.(type) {
 							case bson.M:
 								status, ok := typedFilter["status"].(bson.M)

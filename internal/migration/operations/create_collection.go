@@ -28,7 +28,7 @@ type CreateCollectionOperation struct {
 	CollectionName string
 	TimeSeriesOpts *TimeSeriesOptions
 	ValidatorOpts  *ValidatorOptions
-	Validator      interface{}
+	Validator      any
 }
 
 // Execute creates a collection with the specified options

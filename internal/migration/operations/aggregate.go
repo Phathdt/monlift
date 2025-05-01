@@ -10,7 +10,7 @@ import (
 // AggregateOperation represents an operation to perform an aggregation pipeline
 type AggregateOperation struct {
 	CollectionName string
-	Pipeline       interface{}
+	Pipeline       any
 }
 
 // Execute performs an aggregation pipeline on a collection

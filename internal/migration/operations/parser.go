@@ -116,7 +116,7 @@ func (p *OperationParser) parseCreateCollection(argsStr string) (Operation, erro
 		jsonStr = p.convertMongoShellToJSON(jsonStr)
 
 		// Parse and re-encode to standardize format
-		var jsonData interface{}
+		var jsonData any
 		if err := json.Unmarshal([]byte(jsonStr), &jsonData); err != nil {
 			return nil, fmt.Errorf("failed to parse JSON: %w", err)
 		}
@@ -127,13 +127,13 @@ func (p *OperationParser) parseCreateCollection(argsStr string) (Operation, erro
 		}
 
 		// Get the raw map for direct access
-		optsMap := make(map[string]interface{})
+		optsMap := make(map[string]any)
 		if err := json.Unmarshal(standardizedJSON, &optsMap); err != nil {
 			return nil, fmt.Errorf("failed to parse collection options: %w", err)
 		}
 
 		// Handle timeseries options
-		if timeseries, ok := optsMap["timeseries"].(map[string]interface{}); ok {
+		if timeseries, ok := optsMap["timeseries"].(map[string]any); ok {
 			timeField, timeFieldOk := timeseries["timeField"].(string)
 			if !timeFieldOk {
 				return nil, fmt.Errorf("timeseries timeField must be a string")
@@ -201,7 +201,7 @@ func (p *OperationParser) parseInsertOne(collectionName, argsStr string) (Operat
 
 func (p *OperationParser) parseInsertMany(collectionName, argsStr string) (Operation, error) {
 	// Parse the documents from the command
-	docs := []interface{}{}
+	docs := []any{}
 	if err := bson.UnmarshalExtJSON([]byte(argsStr), true, &docs); err != nil {
 		return nil, fmt.Errorf("failed to parse documents: %w", err)
 	}
@@ -314,7 +314,7 @@ func (p *OperationParser) parseCreateIndex(collectionName, argsStr string) (Oper
 	}
 
 	// Parse keys
-	var keysData interface{}
+	var keysData any
 	if err := json.Unmarshal([]byte(keysStr), &keysData); err != nil {
 		return nil, fmt.Errorf("failed to parse index keys JSON: %w", err)
 	}
@@ -358,19 +358,19 @@ func (p *OperationParser) parseCreateIndex(collectionName, argsStr string) (Oper
 
 	// Parse options if any
 	if optsStr != "" {
-		var optsData interface{}
+		var optsData any
 		if err := json.Unmarshal([]byte(optsStr), &optsData); err != nil {
 			return nil, fmt.Errorf("failed to parse index options JSON: %w", err)
 		}
 
 		// Get the raw map for direct access to numeric values
-		optsMap, ok := optsData.(map[string]interface{})
+		optsMap, ok := optsData.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("failed to convert index options to map")
 		}
 
 		// Handle weights
-		if weights, ok := optsMap["weights"].(map[string]interface{}); ok && isTextIndex {
+		if weights, ok := optsMap["weights"].(map[string]any); ok && isTextIndex {
 			weightsD := bson.D{}
 			for k, v := range weights {
 				// Handle numeric weights directly from JSON to avoid BSON conversion issues

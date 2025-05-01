@@ -22,7 +22,7 @@ type CreateIndexOperation struct {
 	ExpireAfterSeconds int32
 	Weights            bson.D
 	WildcardProjection bson.D
-	PartialFilter      interface{}
+	PartialFilter      any
 	BucketSize         int32
 }
 

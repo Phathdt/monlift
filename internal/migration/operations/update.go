@@ -10,8 +10,8 @@ import (
 // UpdateOneOperation represents an operation to update a single document
 type UpdateOneOperation struct {
 	CollectionName string
-	Filter         interface{}
-	Update         interface{}
+	Filter         any
+	Update         any
 }
 
 // Execute updates a single document in a collection
@@ -26,8 +26,8 @@ func (u *UpdateOneOperation) Execute(ctx context.Context, db *mongo.Database) er
 // UpdateManyOperation represents an operation to update multiple documents
 type UpdateManyOperation struct {
 	CollectionName string
-	Filter         interface{}
-	Update         interface{}
+	Filter         any
+	Update         any
 }
 
 // Execute updates multiple documents in a collection

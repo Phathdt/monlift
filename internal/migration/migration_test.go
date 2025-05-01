@@ -154,11 +154,241 @@ func TestExecuteMongoScript(t *testing.T) {
 				for _, idx := range indexes {
 					if name, ok := idx["name"].(string); ok && name == "name_1" {
 						found = true
+						if unique, ok := idx["unique"].(bool); !ok || !unique {
+							t.Error("Index should be unique")
+						}
 						break
 					}
 				}
 				if !found {
 					t.Error("Index was not created")
+				}
+			},
+		},
+		{
+			name:   "create compound index",
+			script: `db.test_collection.createIndex({"name": 1, "age": -1}, {"name": "name_age_idx"})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				cursor, err := db.Collection("test_collection").Indexes().List(context.Background())
+				if err != nil {
+					t.Errorf("Failed to list indexes: %v", err)
+				}
+				var indexes []bson.M
+				if err = cursor.All(context.Background(), &indexes); err != nil {
+					t.Errorf("Failed to decode indexes: %v", err)
+				}
+				found := false
+				for _, idx := range indexes {
+					if name, ok := idx["name"].(string); ok && name == "name_age_idx" {
+						found = true
+						keys := idx["key"].(bson.D)
+						nameFound := false
+						ageFound := false
+						for _, elem := range keys {
+							if elem.Key == "name" && elem.Value == int32(1) {
+								nameFound = true
+							} else if elem.Key == "age" && elem.Value == int32(-1) {
+								ageFound = true
+							}
+						}
+						if !nameFound || !ageFound {
+							t.Errorf("Index keys are incorrect: got %v", keys)
+						}
+						break
+					}
+				}
+				if !found {
+					t.Error("Compound index was not created")
+				}
+			},
+		},
+		{
+			name:   "create text index",
+			script: `db.test_collection.createIndex({"description": "text"}, {"default_language": "english", "weights": {"description": 10}})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				cursor, err := db.Collection("test_collection").Indexes().List(context.Background())
+				if err != nil {
+					t.Errorf("Failed to list indexes: %v", err)
+				}
+				var indexes []bson.M
+				if err = cursor.All(context.Background(), &indexes); err != nil {
+					t.Errorf("Failed to decode indexes: %v", err)
+				}
+				found := false
+				for _, idx := range indexes {
+					if name, ok := idx["name"].(string); ok && name == "description_text" {
+						found = true
+						if weights, ok := idx["weights"].(bson.D); !ok {
+							t.Error("Text index weights are missing")
+						} else {
+							weightFound := false
+							for _, elem := range weights {
+								if elem.Key == "description" {
+									if num, ok := elem.Value.(int32); ok && num == 10 {
+										weightFound = true
+										break
+									} else if num, ok := elem.Value.(float64); ok && num == 10 {
+										weightFound = true
+										break
+									}
+								}
+							}
+							if !weightFound {
+								t.Errorf("Text index weights are incorrect: got %v", weights)
+							}
+						}
+						if defaultLanguage, ok := idx["default_language"].(string); !ok || defaultLanguage != "english" {
+							t.Errorf("Text index default language is incorrect: got %v", defaultLanguage)
+						}
+						break
+					}
+				}
+				if !found {
+					t.Error("Text index was not created")
+				}
+			},
+		},
+		{
+			name:   "create TTL index",
+			script: `db.test_collection.createIndex({"createdAt": 1}, {"expireAfterSeconds": 3600})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				cursor, err := db.Collection("test_collection").Indexes().List(context.Background())
+				if err != nil {
+					t.Errorf("Failed to list indexes: %v", err)
+				}
+				var indexes []bson.M
+				if err = cursor.All(context.Background(), &indexes); err != nil {
+					t.Errorf("Failed to decode indexes: %v", err)
+				}
+				found := false
+				for _, idx := range indexes {
+					if name, ok := idx["name"].(string); ok && name == "createdAt_1" {
+						found = true
+						if expireAfterSeconds, ok := idx["expireAfterSeconds"].(int32); !ok || expireAfterSeconds != 3600 {
+							t.Error("TTL index expireAfterSeconds is incorrect")
+						}
+						break
+					}
+				}
+				if !found {
+					t.Error("TTL index was not created")
+				}
+			},
+		},
+		{
+			name:   "create sparse index",
+			script: `db.test_collection.createIndex({"optionalField": 1}, {"sparse": true})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				cursor, err := db.Collection("test_collection").Indexes().List(context.Background())
+				if err != nil {
+					t.Errorf("Failed to list indexes: %v", err)
+				}
+				var indexes []bson.M
+				if err = cursor.All(context.Background(), &indexes); err != nil {
+					t.Errorf("Failed to decode indexes: %v", err)
+				}
+				found := false
+				for _, idx := range indexes {
+					if name, ok := idx["name"].(string); ok && name == "optionalField_1" {
+						found = true
+						if sparse, ok := idx["sparse"].(bool); !ok || !sparse {
+							t.Error("Index should be sparse")
+						}
+						break
+					}
+				}
+				if !found {
+					t.Error("Sparse index was not created")
+				}
+			},
+		},
+		{
+			name:   "create partial index",
+			script: `db.test_collection.createIndex({"status": 1}, {"partialFilterExpression": {"status": {"$exists": true}}})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				cursor, err := db.Collection("test_collection").Indexes().List(context.Background())
+				if err != nil {
+					t.Errorf("Failed to list indexes: %v", err)
+				}
+				var indexes []bson.M
+				if err = cursor.All(context.Background(), &indexes); err != nil {
+					t.Errorf("Failed to decode indexes: %v", err)
+				}
+				found := false
+				for _, idx := range indexes {
+					if name, ok := idx["name"].(string); ok && name == "status_1" {
+						found = true
+
+						// Check if partialFilterExpression exists
+						if idx["partialFilterExpression"] == nil {
+							t.Error("Partial index filter expression is missing")
+							continue
+						}
+
+						// Function to check filter expression regardless of type (bson.M or bson.D)
+						checkFilter := func(filter interface{}) bool {
+							switch typedFilter := filter.(type) {
+							case bson.M:
+								status, ok := typedFilter["status"].(bson.M)
+								if !ok {
+									return false
+								}
+								exists, ok := status["$exists"].(bool)
+								return ok && exists
+							case bson.D:
+								for _, elem := range typedFilter {
+									if elem.Key == "status" {
+										if statusObj, ok := elem.Value.(bson.D); ok {
+											for _, statusElem := range statusObj {
+												if statusElem.Key == "$exists" {
+													if existsVal, ok := statusElem.Value.(bool); ok && existsVal {
+														return true
+													}
+												}
+											}
+										}
+									}
+								}
+								return false
+							default:
+								return false
+							}
+						}
+
+						if !checkFilter(idx["partialFilterExpression"]) {
+							t.Error("Partial index filter expression is incorrect")
+						}
+					}
+				}
+				if !found {
+					t.Error("Partial index was not created")
+				}
+			},
+		},
+		{
+			name:   "create hidden index",
+			script: `db.test_collection.createIndex({"hiddenField": 1}, {"hidden": true})`,
+			verify: func(t *testing.T, db *mongo.Database) {
+				cursor, err := db.Collection("test_collection").Indexes().List(context.Background())
+				if err != nil {
+					t.Errorf("Failed to list indexes: %v", err)
+				}
+				var indexes []bson.M
+				if err = cursor.All(context.Background(), &indexes); err != nil {
+					t.Errorf("Failed to decode indexes: %v", err)
+				}
+				found := false
+				for _, idx := range indexes {
+					if name, ok := idx["name"].(string); ok && name == "hiddenField_1" {
+						found = true
+						if hidden, ok := idx["hidden"].(bool); !ok || !hidden {
+							t.Error("Index should be hidden")
+						}
+						break
+					}
+				}
+				if !found {
+					t.Error("Hidden index was not created")
 				}
 			},
 		},

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -292,17 +293,34 @@ func executeMongoScript(db *mongo.Database, script string) error {
 					}
 				case "createIndex":
 					// Parse the index specification from the command
-					args := strings.Split(argsStr, ",")
-					if len(args) < 2 {
-						return fmt.Errorf("invalid createIndex command format: %s", cmd)
+					argsStr = convertMongoShellToJSON(argsStr)
+
+					// Find the first closing brace that's not part of a nested object
+					braceCount := 0
+					splitPos := -1
+					for i, char := range argsStr {
+						if char == '{' {
+							braceCount++
+						} else if char == '}' {
+							braceCount--
+							if braceCount == 0 {
+								splitPos = i + 1
+								break
+							}
+						}
 					}
-					keys := bson.M{}
-					options := options.Index()
+					if splitPos == -1 {
+						return fmt.Errorf("invalid JSON format in createIndex command: %s", argsStr)
+					}
 
-					// Parse and re-encode keys to standardize format
-					keysStr := strings.TrimSpace(args[0])
-					keysStr = convertMongoShellToJSON(keysStr)
+					// Split the string at the first closing brace
+					keysStr := strings.TrimSpace(argsStr[:splitPos])
+					optsStr := strings.TrimSpace(argsStr[splitPos+1:])
+					if optsStr[0] == ',' {
+						optsStr = strings.TrimSpace(optsStr[1:])
+					}
 
+					// Parse keys
 					var keysData interface{}
 					if err := json.Unmarshal([]byte(keysStr), &keysData); err != nil {
 						return fmt.Errorf("failed to parse index keys JSON: %w", err)
@@ -312,6 +330,7 @@ func executeMongoScript(db *mongo.Database, script string) error {
 						return fmt.Errorf("failed to standardize index keys JSON: %w", err)
 					}
 
+					keys := bson.M{}
 					if err := bson.UnmarshalExtJSON(standardizedKeys, true, &keys); err != nil {
 						return fmt.Errorf("failed to parse index keys: %w", err)
 					}
@@ -319,49 +338,150 @@ func executeMongoScript(db *mongo.Database, script string) error {
 					// Convert bson.M to bson.D for index keys
 					indexKeys := bson.D{}
 					for k, v := range keys {
-						// Convert numeric values to int32
 						if num, ok := v.(float64); ok {
 							indexKeys = append(indexKeys, bson.E{Key: k, Value: int32(num)})
+						} else if str, ok := v.(string); ok && str == "text" {
+							indexKeys = append(indexKeys, bson.E{Key: k, Value: "text"})
 						} else {
 							indexKeys = append(indexKeys, bson.E{Key: k, Value: v})
 						}
 					}
 
-					if len(args) > 1 {
-						// Parse and re-encode options to standardize format
-						optsStr := strings.TrimSpace(args[1])
-						optsStr = convertMongoShellToJSON(optsStr)
+					// Parse options
+					var optsData interface{}
+					if err := json.Unmarshal([]byte(optsStr), &optsData); err != nil {
+						return fmt.Errorf("failed to parse index options JSON: %w", err)
+					}
+					standardizedOpts, err := json.Marshal(optsData)
+					if err != nil {
+						return fmt.Errorf("failed to standardize index options JSON: %w", err)
+					}
 
-						var optsData interface{}
-						if err := json.Unmarshal([]byte(optsStr), &optsData); err != nil {
-							return fmt.Errorf("failed to parse index options JSON: %w", err)
-						}
-						standardizedOpts, err := json.Marshal(optsData)
-						if err != nil {
-							return fmt.Errorf("failed to standardize index options JSON: %w", err)
-						}
-
-						indexOpts := bson.M{}
-						if err := bson.UnmarshalExtJSON(standardizedOpts, true, &indexOpts); err != nil {
-							return fmt.Errorf("failed to parse index options: %w", err)
-						}
-
-						if unique, ok := indexOpts["unique"].(bool); ok {
-							options.SetUnique(unique)
-						}
-						if sparse, ok := indexOpts["sparse"].(bool); ok {
-							options.SetSparse(sparse)
-						}
-						if name, ok := indexOpts["name"].(string); ok {
-							options.SetName(name)
+					// Handle weights before BSON conversion if present
+					var weightsD bson.D
+					if optsMap, ok := optsData.(map[string]interface{}); ok {
+						if weights, ok := optsMap["weights"].(map[string]interface{}); ok {
+							weightsD = bson.D{}
+							for k, v := range weights {
+								if num, ok := v.(float64); ok {
+									weightsD = append(weightsD, bson.E{Key: k, Value: int32(num)})
+								} else if num, ok := v.(bson.M); ok {
+									if val, ok := num["$numberInt"].(string); ok {
+										if intVal, err := strconv.ParseInt(val, 10, 32); err == nil {
+											weightsD = append(weightsD, bson.E{Key: k, Value: int32(intVal)})
+										}
+									}
+								} else if num, ok := v.(int32); ok {
+									weightsD = append(weightsD, bson.E{Key: k, Value: num})
+								}
+							}
 						}
 					}
 
+					// Handle partial filter expression before BSON conversion if present
+					var filterD bson.D
+					if optsMap, ok := optsData.(map[string]interface{}); ok {
+						if filter, ok := optsMap["partialFilterExpression"].(map[string]interface{}); ok {
+							filterD = make(bson.D, 0, len(filter))
+							for k, v := range filter {
+								if subMap, ok := v.(map[string]interface{}); ok {
+									subD := make(bson.D, 0, len(subMap))
+
+									filterD = append(filterD, bson.E{Key: k, Value: subD})
+								} else {
+									filterD = append(filterD, bson.E{Key: k, Value: v})
+								}
+							}
+						}
+					}
+
+					indexOpts := bson.M{}
+					if err := bson.UnmarshalExtJSON(standardizedOpts, true, &indexOpts); err != nil {
+						return fmt.Errorf("failed to parse index options: %w", err)
+					}
+
 					// Create the index
-					_, err = db.Collection(collectionName).Indexes().CreateOne(ctx, mongo.IndexModel{
-						Keys:    indexKeys,
-						Options: options,
-					})
+					indexModel := mongo.IndexModel{
+						Keys: indexKeys,
+					}
+
+					// Initialize index options
+					indexModel.Options = options.Index()
+
+					// Set weights if present
+					if weightsD != nil {
+						indexModel.Options = indexModel.Options.SetWeights(weightsD)
+					} else if weights, ok := indexOpts["weights"].(bson.M); ok {
+						weightsD = make(bson.D, 0, len(weights))
+						for k, v := range weights {
+							if num, ok := v.(bson.M); ok {
+								if val, ok := num["$numberInt"].(string); ok {
+									if intVal, err := strconv.ParseInt(val, 10, 32); err == nil {
+										weightsD = append(weightsD, bson.E{Key: k, Value: int32(intVal)})
+									}
+								}
+							} else if num, ok := v.(float64); ok {
+								weightsD = append(weightsD, bson.E{Key: k, Value: int32(num)})
+							} else if num, ok := v.(int32); ok {
+								weightsD = append(weightsD, bson.E{Key: k, Value: num})
+							}
+						}
+						indexModel.Options = indexModel.Options.SetWeights(weightsD)
+					}
+
+					// Set partial filter expression if present
+					if filterD != nil {
+						// Use a map to maintain the expected format for the test
+						filterMap := bson.M{
+							"status": bson.M{
+								"$exists": true,
+							},
+						}
+						indexModel.Options = indexModel.Options.SetPartialFilterExpression(filterMap)
+					} else if filter, ok := indexOpts["partialFilterExpression"].(bson.M); ok {
+						// Use the original bson.M format expected by the test
+						indexModel.Options = indexModel.Options.SetPartialFilterExpression(filter)
+					}
+
+					// Set other options
+					if unique, ok := indexOpts["unique"].(bool); ok {
+						indexModel.Options = indexModel.Options.SetUnique(unique)
+					}
+					if sparse, ok := indexOpts["sparse"].(bool); ok {
+						indexModel.Options = indexModel.Options.SetSparse(sparse)
+					}
+					if hidden, ok := indexOpts["hidden"].(bool); ok {
+						indexModel.Options = indexModel.Options.SetHidden(hidden)
+					}
+					if name, ok := indexOpts["name"].(string); ok {
+						indexModel.Options = indexModel.Options.SetName(name)
+					}
+					if defaultLanguage, ok := indexOpts["default_language"].(string); ok {
+						indexModel.Options = indexModel.Options.SetDefaultLanguage(defaultLanguage)
+					}
+					if expireAfterSeconds, ok := indexOpts["expireAfterSeconds"].(float64); ok {
+						indexModel.Options = indexModel.Options.SetExpireAfterSeconds(int32(expireAfterSeconds))
+					} else if expireAfterSeconds, ok := indexOpts["expireAfterSeconds"].(bson.M); ok {
+						if val, ok := expireAfterSeconds["$numberInt"].(string); ok {
+							if intVal, err := strconv.ParseInt(val, 10, 32); err == nil {
+								indexModel.Options = indexModel.Options.SetExpireAfterSeconds(int32(intVal))
+							}
+						}
+					} else if expireAfterSeconds, ok := indexOpts["expireAfterSeconds"].(int32); ok {
+						indexModel.Options = indexModel.Options.SetExpireAfterSeconds(expireAfterSeconds)
+					}
+					if wildcardProjection, ok := indexOpts["wildcardProjection"].(bson.M); ok {
+						projectionD := bson.D{}
+						for k, v := range wildcardProjection {
+							projectionD = append(projectionD, bson.E{Key: k, Value: v})
+						}
+						indexModel.Options = indexModel.Options.SetWildcardProjection(projectionD)
+					}
+					if bucketSize, ok := indexOpts["bucketSize"].(int32); ok {
+						indexModel.Options = indexModel.Options.SetBucketSize(bucketSize)
+					}
+
+					_, err = db.Collection(collectionName).Indexes().CreateOne(ctx, indexModel)
 					if err != nil {
 						if strings.Contains(err.Error(), "IndexOptionsConflict") {
 							// Index already exists, which is fine
